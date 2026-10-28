@@ -4367,6 +4367,9 @@ int main(int argc, char** argv) {
         if (lend_from < 0 || xcache.slots() <= 0) return full;
         return (full * lend_from + xcache.slots() - 1) / xcache.slots();
     };
+    // the first slot whose expert the RAM copy really keeps: above lend_from when the RAM held fewer of the region's
+    // copies than planned (set once the complement is pinned)
+    int64_t copies_from = lend_from;
     // ---- the start-up picks for the settings the user left out (peer-exclusive, resident RAM, pool affinity and
     // size): one pure rule over what this machine and pack have, so a given setting is never replaced.  The pool is
     // built here, with the picks.
@@ -4540,6 +4543,8 @@ int main(int argc, char** argv) {
             else
                 err = whole_err + "; " + err;
         }
+        if (resident_ok && lend_from >= 0 && src.resident_lent_slots() > 0)
+            copies_from = std::max<int64_t>(lend_from, xcache.slots() - src.resident_lent_slots());
         if (resident_ok && o.prefill_auto_fit && lend_from >= 0) {
             // A lent slot whose expert the complement holds is refilled from RAM; the others are read from the file.
             // Allow the backed slots plus a fixed amount of file reading per prompt.  Those reads are evictable page
@@ -8583,10 +8588,10 @@ int main(int argc, char** argv) {
                 return 1;
             }
             // the tail without RAM copies: the loan follows the cache's end down as the KV grows, so the experts it
-            // reaches below the copies' region take a home before the prompt is read
+            // reaches below the slots that keep a copy take a home before the prompt is read
             int64_t loan_chunk = 0;
             if (!kv_tail_copies && kv_floor > 0 && !in_slot && lend_from > 0 && !pf_parts.empty() &&
-                pf_parts[0].first >= 0 && loan_plan(xcache.slots(), loan_chunk) < lend_from) {
+                pf_parts[0].first >= 0 && loan_plan(xcache.slots(), loan_chunk) < copies_from) {
                 if (!kv_drain(err)) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
