@@ -76,8 +76,12 @@ struct KvHostInputs {
     int64_t crossover_cells = 0;          ///< below this many cells the VRAM tail is the faster place
     uint64_t bytes_per_cell = 0;          ///< host K/V bytes per cell over every QSA layer
     uint64_t ram_available = 0;           ///< bytes free now
-    uint64_t ram_kept = 0;                ///< bytes that stay free: the guard, the serving budget, the RAM homes
+    uint64_t ram_kept = 0;                ///< bytes that stay free beside the pin (kv_host_keep)
 };
+
+/// The RAM a pin leaves free beside it: the guard's floor and what serving can still take, i.e. its budget less what
+/// the session already holds of it (its checkpoints, the parked conversations).
+uint64_t kv_host_keep(uint64_t guard_floor, uint64_t serve_budget, uint64_t serve_held);
 
 struct KvHostChoice {
     bool host = false;

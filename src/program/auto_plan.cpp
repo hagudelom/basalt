@@ -110,6 +110,10 @@ KvHostChoice choose_kv_host(const KvHostInputs& in) {
     return c;
 }
 
+uint64_t kv_host_keep(uint64_t guard_floor, uint64_t serve_budget, uint64_t serve_held) {
+    return guard_floor + (serve_budget - std::min(serve_budget, serve_held));
+}
+
 int64_t kv_host_cells(int64_t need, int64_t max_new, int64_t slack, int64_t grid, int64_t max_cells) {
     int64_t c = std::max<int64_t>(need, 0) + std::max<int64_t>(max_new, 0) + std::max<int64_t>(slack, 0);
     if (grid > 0) c = (c + grid - 1) / grid * grid;

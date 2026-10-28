@@ -235,6 +235,27 @@ int main() {
         CHECK(plan_kv_host(in, 0).act == KvHostAct::take);
         CHECK_STR(kv_host_act_name(KvHostAct::grow), "grow");
     }
+    {   // what a pin leaves free: the guard and the serving budget still to come
+        const uint64_t M = 1ull << 20;
+        CHECK(kv_host_keep(3 * G, 2 * G, 0) == 5 * G);
+        CHECK(kv_host_keep(3 * G, 2 * G, 512 * M) == 5 * G - 512 * M);
+        CHECK(kv_host_keep(3 * G, 2 * G, 9 * G) == 3 * G);      // held past the budget: never below the guard
+        CHECK(kv_host_keep(3 * G, 0, 1 * G) == 3 * G);
+        // a 131K turn deep in a session: 1.93 GiB to pin, 6.63 GiB free, guard 3.09 GiB, budget 2.13 GiB
+        KvHostInputs in;
+        in.crossover_cells = 99328;
+        in.cells = 163840;
+        in.bytes_per_cell = (uint64_t) (1.93 * (double) G) / (uint64_t) in.cells;
+        in.ram_available = (uint64_t) (6.63 * (double) G);
+        const uint64_t guard = (uint64_t) (3.09 * (double) G), budget = (uint64_t) (2.13 * (double) G);
+        in.ram_kept = kv_host_keep(guard, budget, 0);
+        CHECK(plan_kv_host(in, 0).act == KvHostAct::none);       // the whole budget kept: stays in VRAM
+        in.ram_kept = kv_host_keep(guard, budget, 600 * M);      // 600 MiB of it already held
+        CHECK(plan_kv_host(in, 0).act == KvHostAct::take);
+        in.ram_kept = kv_host_keep(guard, budget, 400 * M);      // not enough of it held
+        CHECK(plan_kv_host(in, 0).act == KvHostAct::none);
+        CHECK(plan_kv_host(in, 98304).act == KvHostAct::drop);   // nor for a larger pool beside the one held
+    }
     if (g_fail) { std::printf("auto_plan_test: %d failures\n", g_fail); return 1; }
     std::printf("auto_plan_test: ok\n");
     return 0;
