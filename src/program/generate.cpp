@@ -7154,10 +7154,11 @@ int main(int argc, char** argv) {
         // a test's stand-in for the RAM free now, MiB (forces the fallback); negative: MemAvailable
         const int64_t kv_host_ram = (int64_t) basalt::core::exp_flag("kv_host_ram_mib", -1);
         // a pin leaves the guard's floor free and what serving can still take: its budget less the part the session
-        // holds now (the running checkpoints, the parked conversations; each counted up to its own share)
+        // holds now (the running checkpoints and the blocks their pool keeps for the next ones, the parked
+        // conversations; each counted up to its own share)
         const ServeGrowth kv_host_budget = serve_growth(o, g);
         auto kv_host_kept = [&]() -> uint64_t {
-            uint64_t ck = 0;
+            uint64_t ck = basalt::core::CheckpointBytes::allocator_type::pooled_bytes();
             for (const ConvCheckpoint& c : checks) ck += c.bytes();
             const uint64_t held = std::min<uint64_t>(ck, kv_host_budget.checkpoints) +
                                   std::min<uint64_t>(conversations.bytes(), kv_host_budget.conversations);
