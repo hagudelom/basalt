@@ -362,6 +362,63 @@ bool available_memory_bytes(uint64_t& bytes) {
     return bytes > 0;
 }
 
+void free_home(const detail::HomeRegion& r) {
+    if (r.arena == nullptr) return;
+    if (r.registered) {
+        (void) cudaHostUnregister(r.arena);
+        basalt::platform::free_region(r.map_base, r.map_bytes);
+    } else if (r.pinned) {
+        (void) cudaFreeHost(r.arena);
+    } else {
+        if (r.locked > 0) basalt::platform::unlock_resident(r.arena, r.locked);
+        std::free(r.arena);
+    }
+}
+
+// Page-locked, mapped homes: ordinary memory whose pages several threads fault in, then registered with the driver.
+// The driver's own allocation zeroes and locks the same bytes page by page, several times slower, and the homes are
+// taken while a request waits.  A region the OS or the driver refuses is left without an arena (the caller falls back).
+void pin_homes(std::vector<detail::HomeRegion>& regions) {
+    constexpr uint64_t kHuge = 2ull << 20;
+    auto padded = [&](const detail::HomeRegion& r) { return (r.bytes + kHuge - 1) / kHuge * kHuge; };
+    for (detail::HomeRegion& r : regions) {
+        basalt::platform::RegionBacking got;
+        std::string note;
+        r.arena = basalt::platform::alloc_region(padded(r), got, note, "", 0, r.map_base, r.map_bytes);
+    }
+    // every page written once, the regions' 2 MiB blocks dealt round-robin to the threads
+    std::vector<std::pair<uint8_t*, uint64_t>> blocks;
+    for (const detail::HomeRegion& r : regions)
+        if (r.arena != nullptr)
+            for (uint64_t at = 0; at < padded(r); at += kHuge) blocks.emplace_back((uint8_t*) r.arena + at, kHuge);
+    const unsigned hw = std::thread::hardware_concurrency();
+    const size_t threads = std::min<size_t>(blocks.size(), std::max(1u, std::min(8u, hw)));
+    auto touch = [&](size_t t) {
+        for (size_t b = t; b < blocks.size(); b += threads)
+            for (uint64_t at = 0; at < blocks[b].second; at += 4096) blocks[b].first[at] = 0;
+    };
+    std::vector<std::thread> pool;
+    for (size_t t = 1; t < threads; ++t) pool.emplace_back(touch, t);
+    if (threads > 0) touch(0);
+    for (auto& th : pool) th.join();
+    for (detail::HomeRegion& r : regions) {
+        if (r.arena == nullptr) continue;
+        void* alias = nullptr;
+        const cudaError_t reg = cudaHostRegister(r.arena, (size_t) padded(r), cudaHostRegisterMapped | cudaHostRegisterPortable);
+        if (reg == cudaSuccess && cudaHostGetDevicePointer(&alias, r.arena, 0) == cudaSuccess && alias != nullptr) {
+            r.device = (const uint8_t*) alias;
+            r.pinned = r.registered = true;
+            continue;
+        }
+        if (reg == cudaSuccess) (void) cudaHostUnregister(r.arena);
+        basalt::platform::free_region(r.map_base, r.map_bytes);
+        r.arena = nullptr;
+        r.map_base = nullptr;
+        r.map_bytes = 0;
+    }
+    (void) cudaGetLastError();
+}
+
 }  // namespace
 
 // ================================ THE FILE-BACKED SOURCE ================================
@@ -479,10 +536,11 @@ bool FileExpertSource::open(const FileRange& experts, int64_t n_layers, int64_t 
 }
 
 void FileExpertSource::close() {
+    repin_join();
     if (complement_arena_ != nullptr) {
         if (complement_pinned_ && !complement_partial_) (void) cudaFreeHost(complement_arena_);
         else {
-            if (complement_partial_) (void) cudaHostUnregister(complement_arena_);
+            if (complement_partial_) unregister_complement();
             if (complement_locked_ > 0)
                 basalt::platform::unlock_resident((uint8_t*) complement_arena_ + complement_lock_off_, complement_locked_);
             basalt::platform::free_aligned(complement_arena_);
@@ -495,13 +553,7 @@ void FileExpertSource::close() {
             std::free(top_arena_);
         }
     }
-    for (const detail::HomeRegion& r : homes_) {
-        if (r.pinned) (void) cudaFreeHost(r.arena);
-        else {
-            if (r.locked > 0) basalt::platform::unlock_resident(r.arena, r.locked);
-            std::free(r.arena);
-        }
-    }
+    for (const detail::HomeRegion& r : homes_) free_home(r);
     homes_.clear();
     homes_pending_.clear();
     homes_next_ = 0;
@@ -529,6 +581,9 @@ void FileExpertSource::close() {
     complement_offsets_.clear();
     ++places_gen_;
     complement_pinned_ = false;
+    unpinned_ = false;
+    pin_units_.clear();
+    pin_state_.reset();
     complement_partial_ = false;
     complement_pin_limit_ = 0;
     complement_lock_off_ = 0;
@@ -1257,50 +1312,43 @@ bool FileExpertSource::homes_take(const std::vector<std::pair<int32_t, int32_t>>
     // regions of a bounded size: one that no expert uses any more can then be returned on its own
     constexpr uint64_t kRegionBytes = 96ull << 20;
     if (homes_next_ < homes_start()) homes_next_ = homes_start();
-    size_t k = 0;
-    while (k < experts.size()) {
+    struct Cut { size_t first, count; };
+    std::vector<Cut> cuts;
+    std::vector<detail::HomeRegion> made;
+    for (size_t k = 0; k < experts.size();) {
         uint64_t bytes = 0;
         size_t n = 0;
         while (k + n < experts.size() && (n == 0 || bytes < kRegionBytes))
             bytes += layer_blob_bytes_[(size_t) experts[k + n++].first];
-        detail::HomeRegion r;
-        r.bytes = bytes;
-        if (complement_pinned_ || top_pinned_) {
-            void* arena = nullptr;
-            if (cudaHostAlloc(&arena, (size_t) bytes, cudaHostAllocMapped | cudaHostAllocPortable) == cudaSuccess) {
-                void* alias = nullptr;
-                if (cudaHostGetDevicePointer(&alias, arena, 0) == cudaSuccess && alias != nullptr) {
-                    r.arena = arena;
-                    r.device = (const uint8_t*) alias;
-                    r.pinned = true;
-                } else {
-                    (void) cudaFreeHost(arena);
-                }
-            }
-            (void) cudaGetLastError();
-        }
+        cuts.push_back({k, n});
+        made.emplace_back().bytes = bytes;
+        k += n;
+    }
+    if (complement_pinned_ || top_pinned_) pin_homes(made);
+    for (size_t i = 0; i < made.size(); ++i) {
+        detail::HomeRegion& r = made[i];
         if (r.arena == nullptr) {
-            r.arena = std::malloc((size_t) bytes);
+            r.arena = std::malloc((size_t) r.bytes);
             if (r.arena == nullptr) {
+                for (size_t j = i + 1; j < made.size(); ++j) free_home(made[j]);
                 err = "the RAM for the experts the cache gives back could not be allocated";
                 dst.clear();
                 homes_abort();
                 return false;
             }
             if (complement_locked_ > 0 || top_locked_ > 0)
-                r.locked = basalt::platform::lock_resident(r.arena, bytes).locked_bytes;
+                r.locked = basalt::platform::lock_resident(r.arena, r.bytes).locked_bytes;
         }
         r.base = homes_next_;
-        homes_next_ += bytes;
+        homes_next_ += r.bytes;
         homes_.push_back(r);
         uint64_t at = 0;
-        for (size_t m = 0; m < n; ++m) {
-            const auto& [l, e] = experts[k + m];
+        for (size_t m = 0; m < cuts[i].count; ++m) {
+            const auto& [l, e] = experts[cuts[i].first + m];
             homes_pending_.emplace_back((size_t) l * (size_t) n_expert_ + (size_t) e, r.base + at);
             dst.push_back((uint8_t*) r.arena + (size_t) at);
             at += layer_blob_bytes_[(size_t) l];
         }
-        k += n;
     }
     return true;
 }
@@ -1341,11 +1389,7 @@ uint64_t FileExpertSource::homes_reclaim() {
                                              return f.first >= r.base && f.first - r.base < r.bytes;
                                          }),
                           spare_free_.end());
-        if (r.pinned) (void) cudaFreeHost(r.arena);
-        else {
-            if (r.locked > 0) basalt::platform::unlock_resident(r.arena, r.locked);
-            std::free(r.arena);
-        }
+        free_home(r);
         freed += r.bytes;
         homes_.erase(homes_.begin() + (ptrdiff_t) k);
     }
@@ -1719,6 +1763,101 @@ bool FileExpertSource::pinned(int64_t layer, int64_t expert) const {
     // a partial pin (CS-T): only the registered prefix
     return !complement_partial_ ||
            complement_offsets_[index] + layer_blob_bytes_[(size_t) layer] <= complement_pin_limit_;
+}
+
+void FileExpertSource::repin_join() {
+    for (auto& t : pin_threads_) t.join();
+    pin_threads_.clear();
+}
+
+// Each range registered by itself: the whole arena (as loaded), or the ranges of an earlier WAKE.
+void FileExpertSource::unregister_complement() {
+    if (unpinned_ || complement_arena_ == nullptr) return;
+    if (pin_units_.size() >= 2 && pin_state_) {
+        for (size_t i = 0; i + 1 < pin_units_.size(); ++i)
+            if (pin_state_[i].load() == 1) (void) cudaHostUnregister((uint8_t*) complement_arena_ + pin_units_[i]);
+    } else {
+        (void) cudaHostUnregister(complement_arena_);
+    }
+    (void) cudaGetLastError();
+}
+
+bool FileExpertSource::unpin_complement(std::string& err) {
+    if (unpinned_) return true;
+    if (!complement_ready_ || complement_arena_ == nullptr || !complement_partial_ ||
+        complement_pin_limit_ != complement_bytes_ || complement_device_ == nullptr ||
+        complement_device_ != complement_host_) {
+        err = "the RAM copy is not one registered range read at its host addresses";
+        return false;
+    }
+    repin_join();
+    unregister_complement();
+    unpinned_ = true;
+    pin_units_.clear();   // laid out again at the next WAKE (adaptive swaps may have moved blobs since)
+    pin_state_.reset();
+    return true;
+}
+
+void FileExpertSource::repin_start(int threads) {
+    if (!unpinned_ || !pin_threads_.empty()) return;
+    if (pin_units_.empty()) {
+        // the ranges end where a blob starts on a page boundary, about 1 GiB apart (a blob never spans two ranges,
+        // so every copy from one stays a copy from registered memory); the last one ends where the load registered
+        constexpr uint64_t kPage = 4096, kUnit = 1ull << 30, kHuge = 2ull << 20;
+        const uint64_t end = (complement_bytes_ + kHuge - 1) / kHuge * kHuge;
+        std::vector<uint64_t> starts;
+        for (uint64_t off : complement_offsets_)
+            if (off != kNoComplement && off < complement_bytes_ && off % kPage == 0) starts.push_back(off);
+        std::sort(starts.begin(), starts.end());
+        pin_units_.push_back(0);
+        for (uint64_t s : starts)
+            if (s >= pin_units_.back() + kUnit) pin_units_.push_back(s);
+        pin_units_.push_back(end);
+    }
+    const size_t n = pin_units_.size() - 1;
+    pin_state_.reset(new std::atomic<int>[n]);
+    for (size_t i = 0; i < n; ++i) pin_state_[i].store(0);
+    pin_next_.store(0);
+    for (int t = 0; t < std::max(1, threads); ++t)
+        pin_threads_.emplace_back([this, n] {
+            for (;;) {
+                const size_t i = pin_next_.fetch_add(1);
+                if (i >= n) return;
+                const cudaError_t e = cudaHostRegister((uint8_t*) complement_arena_ + pin_units_[i],
+                                                       (size_t) (pin_units_[i + 1] - pin_units_[i]),
+                                                       cudaHostRegisterPortable | cudaHostRegisterMapped);
+                if (e != cudaSuccess) (void) cudaGetLastError();
+                pin_state_[i].store(e == cudaSuccess ? 1 : 2, std::memory_order_release);
+            }
+        });
+}
+
+bool FileExpertSource::repin_wait(const void* p, uint64_t n) const {
+    if (!unpinned_ || !pin_state_ || pin_units_.size() < 2) return true;
+    const uint8_t* base = (const uint8_t*) complement_arena_;
+    const uint8_t* q = (const uint8_t*) p;
+    if (q < base || q >= base + pin_units_.back()) return true;   // not in the copy (a RAM home)
+    const uint64_t lo = (uint64_t) (q - base), hi = std::min<uint64_t>(lo + n, pin_units_.back());
+    size_t i = (size_t) (std::upper_bound(pin_units_.begin(), pin_units_.end(), lo) - pin_units_.begin()) - 1;
+    for (; i + 1 < pin_units_.size() && pin_units_[i] < hi; ++i) {
+        int s;
+        while ((s = pin_state_[i].load(std::memory_order_acquire)) == 0) std::this_thread::yield();
+        if (s != 1) return false;
+    }
+    return true;
+}
+
+bool FileExpertSource::repin_finish(std::string& err) {
+    if (!unpinned_) return true;
+    repin_join();
+    if (!pin_state_) { err = "the RAM copy was not registered again"; return false; }
+    for (size_t i = 0; i + 1 < pin_units_.size(); ++i)
+        if (pin_state_[i].load() != 1) {
+            err = "the driver refused to register the RAM copy again";
+            return false;
+        }
+    unpinned_ = false;
+    return true;
 }
 
 const uint8_t* FileExpertSource::device_alias(int64_t layer, int64_t expert) const {
