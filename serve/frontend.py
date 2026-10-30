@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import os
 import json
 import re
 import threading
@@ -255,6 +256,8 @@ def unmark_think_literals(prompt: str, tags: dict[str, str] = LITERAL_TAGS) -> t
 def _late_system_to_user(messages: list[dict]) -> list[dict]:
     """Turn system messages after the first into user messages in place; the template allows system only first,
     and merging would change the prompt start and lose the cache."""
+    if os.environ.get("BASALT_KEEP_LATE_SYSTEM") == "1":   # local: the template renders a late system turn in place
+        return messages
     return [dict(m, role="user") if m.get("role") == "system" and i > 0 else m for i, m in enumerate(messages)]
 
 

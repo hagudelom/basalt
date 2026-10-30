@@ -194,6 +194,8 @@ def main() -> int:
             "Thinking about it.</think>\n\nHello from the mock engine."], batch=a.parallel or 0), None, dict(a.sampling_launch)
     # the model's exported template, else the bundled one
     tpl = tpath / "chat_template.jinja"
+    if os.environ.get("BASALT_CHAT_TEMPLATE"):   # local: a template file in place of the model's
+        tpl = Path(os.environ["BASALT_CHAT_TEMPLATE"])
     svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
                   model_name=cfg.get("model_name", "qwen3.8-flash-next"), vision=vision,
                   sampling_defaults=sampling_defaults, fit_max_tokens=a.fit_max_tokens, grammar=a.grammar,
