@@ -92,10 +92,6 @@ bool keep_full_speed() {
     return SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof s) != 0;
 }
 
-// Without peer mappings between the devices the driver stages a peer copy through the host; the expert tier works
-// over that, as on a pair without P2P.
-bool gpu_peer_access() { return true; }
-
 bool gpu_memory_pages() { return true; }
 
 bool stderr_is_terminal() {
@@ -149,8 +145,6 @@ void prefer_oom_victim() {
 }
 
 bool keep_full_speed() { return true; }   // the scheduler does not slow a process for its window's state
-
-bool gpu_peer_access() { return true; }
 
 // WSL2 reaches the GPU through the Windows driver, which pages
 bool gpu_memory_pages() { return host_os_name() == "WSL2"; }
