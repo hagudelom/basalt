@@ -13,6 +13,7 @@
 #include "basalt/kernels/cpu/expert_layout.hpp"
 #include "basalt/kernels/bf16_gemv.hpp"
 #include "basalt/kernels/native_router.hpp"
+#include "basalt/kernels/route_prior.hpp"
 #include "basalt/kernels/native_moe.hpp"
 #include "basalt/kernels/cpu/expert.hpp"
 #include "basalt/kernels/cpu/pool.hpp"
@@ -2693,7 +2694,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         ring_fork = pk_ring;
         // the read writes the q8_1 rows, post's gate/up launch plans CUDA0's share
         glue_on = false;
-        if (pk_ring && dm_->ptab0 != nullptr && dec_hc && router_multi && hc_fused_q8_rows_ok()) {
+        // residency-biased routing (BASALT_ROUTE_PRIOR, local experiment): the experts are picked again after the
+        // router, so the fused read that routes and publishes in one launch is not used
+        const float rp_lambda = basalt::kernels::route_prior_lambda();
+        const bool rp_on = rp_lambda > 0.0f && NE == 512 && K == 10 && hits_.d_res != nullptr;
+        if (!rp_on && pk_ring && dm_->ptab0 != nullptr && dec_hc && router_multi && hc_fused_q8_rows_ok()) {
             const auto& f = basalt::kernels::cpu::expert_layout().fmt[(size_t) l];
             glue_on = dm_->vram < 0 && dec_moe_glue_ok(native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff));
             if (!glue_on) note_fallback("glue off for the layer's experts", f.gu_type, f.d_type);
@@ -2706,7 +2711,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             PdlScope ps(pdl);   // after the out projection's kernel
             if (dec_hc) {
                 HcFusedArgs h = hc_args(1, true, inj_, inj2_);
-                if (router_multi) {
+                if (router_multi && !rp_on) {
                     h.w_router = (const uint16_t*) w_router->data;
                     h.logits = logits_; h.ids = ids_; h.weights = w_;
                     if (glue_on) {   // the ring's block starts with the read and follows its counts
@@ -2751,6 +2756,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             mb.logits = logits_ + t * NE; mb.ids = ids_ + t * K; mb.weights = w_ + t * K;
             if (!moe_route(wt, g, l, K, mb, mixed_ + t * N, cs, err, nullptr)) return false;
         }
+        if (rp_on) basalt::kernels::route_prior_top10(logits_, hits_.d_res + l * g.n_expert, rp_lambda, ids_, w_, n, cs);
         if (dm) {   // the tiers, CUDA0's plan, the q8_1 rows and the rings in one launch
             DmRouteArgs ra;
             ra.ids = ids_; ra.x = xm; ra.n_tok = n; ra.k = (int) K; ra.n_embd = (int) N;

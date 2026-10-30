@@ -206,7 +206,7 @@ add_library(kernels STATIC src/kernels/cuda/dequant_s2.cu src/kernels/cuda/s2_ge
                         src/kernels/cuda/native_moe.cu
                         src/kernels/cuda/native_gdn.cu
                         src/kernels/cuda/native_gr_postops.cu
-                        src/kernels/cuda/native_router.cu
+                        src/kernels/cuda/native_router.cu src/kernels/cuda/route_prior.cu
                         src/kernels/cuda/native_gdn_preprocess.cu
                         src/kernels/cuda/native_qsa.cu
                         src/kernels/cuda/native_rope.cu
@@ -261,7 +261,7 @@ set_source_files_properties(src/kernels/cuda/native_mmvq.cu src/kernels/cuda/nat
     src/kernels/cuda/native_moe.cu
     src/kernels/cuda/native_gdn.cu
     src/kernels/cuda/native_gr_postops.cu
-    src/kernels/cuda/native_router.cu
+    src/kernels/cuda/native_router.cu src/kernels/cuda/route_prior.cu
     src/kernels/cuda/native_gdn_preprocess.cu
     src/kernels/cuda/native_qsa.cu
     src/kernels/cuda/native_rope.cu
