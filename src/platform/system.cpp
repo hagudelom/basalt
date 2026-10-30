@@ -92,7 +92,9 @@ bool keep_full_speed() {
     return SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof s) != 0;
 }
 
-bool gpu_peer_access() { return false; }
+// WDDM gives a process no peer mappings between its devices; the driver stages the peer copies through the host,
+// which the expert tier works over, as it does on Linux without P2P.
+bool gpu_peer_access() { return true; }
 
 bool gpu_memory_pages() { return true; }
 
