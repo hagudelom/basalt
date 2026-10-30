@@ -45,7 +45,8 @@ inline float draft_cum_scale() {
     const float t = (draft_cum_cpu_mb() - kLoMb) / (kHiMb - kLoMb);
     return 1.0f + (kMax - 1.0f) * (t < 0.0f ? 0.0f : t > 1.0f ? 1.0f : t);
 }
-inline float draft_cum_base() { return kDraftCumBase0 * draft_cum_scale(); }
+/// Port of #128 for the campaign: a constant threshold (0.5, or --exp draft_th=V), never adapted.
+inline float draft_cum_base() { const float v = (float) exp_flag("draft_th", 0.0); return v > 0.0f ? v : 0.50f; }
 
 /// Per-request threshold.  The threshold falls from the base toward kLo as the
 /// request's drafts are accepted more often than the bin table predicts: when they run well, longer windows pay.  The
@@ -60,7 +61,8 @@ struct DraftCumAdapt {
 
     /// One verified window of the MTP chain: `n` drafts were offered with probabilities probs[0..n), `acc` accepted.
     void observe(const float* probs, int n, int acc) {
-        if (n <= 0) return;
+        (void) probs; (void) acc;
+        if (n <= 0 || true) return;
         constexpr double kDecay = 0.97, kRlo = 0.9, kRhi = 1.1;
         const float kLo = 0.25f * draft_cum_scale();
         double c = 1.0, e = 0.0;
