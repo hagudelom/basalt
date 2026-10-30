@@ -92,7 +92,9 @@ bool keep_full_speed() {
     return SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof s) != 0;
 }
 
-bool gpu_peer_access() { return false; }
+// Without peer mappings between the devices the driver stages a peer copy through the host; the expert tier works
+// over that, as on a pair without P2P.
+bool gpu_peer_access() { return true; }
 
 bool gpu_memory_pages() { return true; }
 
