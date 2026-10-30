@@ -92,7 +92,7 @@ bool keep_full_speed() {
     return SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof s) != 0;
 }
 
-bool gpu_peer_access() { return false; }
+bool gpu_peer_access() { return true; }
 
 bool stderr_is_terminal() {
     if (!_isatty(_fileno(stderr))) return false;

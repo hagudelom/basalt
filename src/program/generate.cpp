@@ -1347,7 +1347,8 @@ int main(int argc, char** argv) {
         mm.peer_overhead = 5ull << 28;
         const basalt::program::MgPlan mp = basalt::program::plan_multi_gpu(chosen_cards, mm);
         basalt::log::info("basalt", "%s", mp.line.c_str());
-        if (mp.pick == basalt::program::Mechanism::LayerSplit && o.peer_device >= 1) {
+        const bool force_split = std::getenv("BASALT_FORCE_SPLIT") != nullptr;   // local test only
+        if ((mp.pick == basalt::program::Mechanism::LayerSplit || force_split) && o.peer_device >= 1) {
             o.layer_split = "auto";
             o.peer_devices.clear();
             o.peer_device = -1;
