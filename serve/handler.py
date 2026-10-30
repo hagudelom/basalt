@@ -649,8 +649,9 @@ def make_handler(svc: Service):
             except ValueError as e:
                 raise ResponsesError(str(e).replace("response_format", "text.format"), "text.format") from None
             if structured and tools:
-                raise ResponsesError("a JSON text.format with tools is not supported", "text.format",
-                                     "unsupported_parameter")
+                # local: a JSON text.format answers with the JSON, so the tools are left out (Codex sends its
+                # title request with the session's tools)
+                tools, names = None, type(names)()
             try:
                 svc.require_grammar(responses_api.text_format(req))
             except ValueError as e:
