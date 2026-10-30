@@ -84,7 +84,7 @@ std::string python_interpreter(const std::string& src_dir) {
 
 void prefer_oom_victim() {}
 
-bool gpu_peer_access() { return false; }
+bool gpu_peer_access() { return true; }
 
 bool stderr_is_terminal() {
     if (!_isatty(_fileno(stderr))) return false;
