@@ -672,18 +672,18 @@ def _union_variants(root: dict, schema, out: list, depth: int = 0) -> None:
         out.append(schema)
 
 
-def tool_properties(tool: dict | None) -> dict:
+def _tool_properties(tool: dict | None) -> dict:
     """A tool's parameter schemas by name. Parameters sent as a union ({"properties": {}, "oneOf": [...]}) take the
     properties of every variant, string enums united, as the tool-call grammar does."""
     params = (tool or {}).get("parameters") or {}
     props = params.get("properties") if isinstance(params, dict) else None
     if props or not isinstance(params, dict):
         return props or {}
-    variants: list = []
+    variants = []
     for k in ("oneOf", "anyOf"):
         for alt in params.get(k) if isinstance(params.get(k), list) else []:
             _union_variants(params, alt, variants)
-    merged: dict = {}
+    merged = {}
     for v in variants:
         for name, prop in v["properties"].items():
             value = _deref(params, prop)
@@ -711,7 +711,7 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
         raise ValueError("malformed tool call: " + body[:80])
     name = body[len("<function="):body.index(">")]
     rest = body[body.index(">") + 1:]
-    props = tool_properties(schema)
+    props = _tool_properties(schema)
     args = {}
     while "<parameter=" in rest:
         rest = rest[rest.index("<parameter=") + len("<parameter="):]
@@ -792,7 +792,7 @@ class OutputParser:
                     return out
                 name = rest[a + 10:b]
                 self.scall = ToolCall(name=name, arguments={})
-                self.sdeclared = tool_properties(self.schemas.get(name))
+                self.sdeclared = _tool_properties(self.schemas.get(name))
                 out.append(Event("tool_start", call=self.scall))
                 args("{")
                 self.sp += b + 1

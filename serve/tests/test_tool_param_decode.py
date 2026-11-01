@@ -108,7 +108,8 @@ class UnionParameters(unittest.TestCase):
         body = ("<function=automation>\n<parameter=mode>\ncreate\n</parameter>\n"
                 "<parameter=name>\n123\n</parameter>\n<parameter=every>\n8\n</parameter>\n</function>")
         self.assertEqual(parse_tool_call(body, UNION).arguments, {"mode": "create", "name": "123", "every": 8})
-        body = "<function=automation>\n<parameter=mode>\nview\n</parameter>\n<parameter=id>\n42\n</parameter>\n</function>"
+        body = ("<function=automation>\n<parameter=mode>\nview\n</parameter>\n"
+                "<parameter=id>\n42\n</parameter>\n</function>")
         self.assertEqual(parse_tool_call(body, UNION).arguments, {"mode": "view", "id": "42"})
 
     def test_streamed(self):
